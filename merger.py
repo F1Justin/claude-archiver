@@ -110,6 +110,17 @@ def group_conversations(all_conversations: list[dict]) -> dict[str, list[dict]]:
     return groups
 
 
+def count_new_rounds(conv_uuid: str, new_conv: dict) -> int:
+    """Count how many new human-assistant rounds were added compared to stored version."""
+    existing = load_existing_json(conv_uuid)
+    old_uuids = {m["uuid"] for m in existing.get("chat_messages", [])} if existing else set()
+    new_human = sum(
+        1 for m in new_conv.get("chat_messages", [])
+        if m["uuid"] not in old_uuids and m.get("sender") == "human"
+    )
+    return max(new_human, 1) if not existing else new_human
+
+
 def has_changed(conv_uuid: str, new_conv: dict) -> bool:
     """Check if a conversation has actually changed compared to the stored version."""
     existing = load_existing_json(conv_uuid)

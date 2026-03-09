@@ -12,12 +12,13 @@ import argparse
 import logging
 import re
 import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
 
 from config import FULL_DIR, SINGLE_DIR, DOWNLOADS_DIR, FULL_EXPORT_PATTERN, SINGLE_EXPORT_PATTERN
-from merger import group_conversations, has_changed, merge_all_conversations
+from merger import count_new_rounds, group_conversations, has_changed, merge_all_conversations
 from parser import extract_memories, parse_full_export_dir, parse_single_export
 from renderer import cleanup_stale_md, write_conversation_json, write_conversation_md, write_memories
 from watcher import ingest_full_export, ingest_single_export, ingest_single_export_md, start_watcher
@@ -59,21 +60,27 @@ def scan_existing():
 
     if not all_conversations:
         logger.info("No conversations found.")
-        return
+        return 0, 0
 
-    process_conversations(all_conversations)
+    result = process_conversations(all_conversations)
     logger.info("=== Full scan complete ===")
+    return result
 
 
-def process_conversations(all_conversations: list[dict]):
-    """Group, merge, and write output for a list of parsed conversations."""
+def process_conversations(all_conversations: list[dict]) -> tuple[int, int]:
+    """Group, merge, and write output for a list of parsed conversations.
+
+    Returns (conversations_written, new_rounds).
+    """
     groups = group_conversations(all_conversations)
     merged = merge_all_conversations(groups)
 
     written = 0
     skipped = 0
+    total_new_rounds = 0
     for conv in merged:
         if has_changed(conv["uuid"], conv):
+            total_new_rounds += count_new_rounds(conv["uuid"], conv)
             write_conversation_json(conv)
             write_conversation_md(conv)
             cleanup_stale_md(conv)
@@ -82,15 +89,32 @@ def process_conversations(all_conversations: list[dict]):
             skipped += 1
 
     logger.info(
-        "Processed %d conversations: %d written, %d unchanged",
-        len(merged), written, skipped,
+        "Processed %d conversations: %d written (%d new rounds), %d unchanged",
+        len(merged), written, total_new_rounds, skipped,
     )
+    return written, total_new_rounds
+
+
+def notify(title: str, message: str):
+    """Send a macOS notification."""
+    try:
+        subprocess.run(
+            ["osascript", "-e", f'display notification "{message}" with title "{title}"'],
+            timeout=5, capture_output=True,
+        )
+    except Exception as e:
+        logger.warning("Failed to send notification: %s", e)
 
 
 def on_new_files(moved_paths: list[Path]):
     """Callback when watcher detects new files — re-scan and merge."""
-    logger.info("New files detected: %s", [p.name for p in moved_paths])
-    scan_existing()
+    names = [p.name for p in moved_paths]
+    logger.info("New files detected: %s", names)
+    written, new_rounds = scan_existing()
+    if written:
+        notify("Claude Archiver", f"更新 {written} 条对话，新增 {new_rounds} 轮问答")
+    else:
+        notify("Claude Archiver", "已处理，无新内容变化")
 
 
 def scan_downloads_existing():

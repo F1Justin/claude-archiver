@@ -4,8 +4,10 @@ Output generators for JSON and Markdown formats.
 
 import json
 import logging
+import os
 import re
 import shutil
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from config import JSON_DIR, MD_DIR, MEMORIES_DIR
@@ -13,6 +15,68 @@ from config import JSON_DIR, MD_DIR, MEMORIES_DIR
 logger = logging.getLogger(__name__)
 
 MAX_FILENAME_LEN = 80
+_UTC8 = timezone(timedelta(hours=8))
+
+
+def _utc_to_local(ts: str) -> datetime | None:
+    """Parse a UTC timestamp string and convert to UTC+8."""
+    if not ts:
+        return None
+    ts = ts.rstrip("Z")
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            dt = datetime.strptime(ts, fmt).replace(tzinfo=timezone.utc)
+            return dt.astimezone(_UTC8)
+        except ValueError:
+            continue
+    return None
+
+
+def _local_date(ts: str) -> str:
+    """Extract YYYY-MM-DD in UTC+8 from a UTC timestamp."""
+    dt = _utc_to_local(ts)
+    return dt.strftime("%Y-%m-%d") if dt else ts[:10]
+
+
+def _local_datetime(ts: str) -> str:
+    """Convert UTC timestamp to 'YYYY-MM-DD HH:MM:SS' in UTC+8."""
+    dt = _utc_to_local(ts)
+    return dt.strftime("%Y-%m-%d %H:%M:%S") if dt else ""
+
+
+def _set_file_times(path: Path, created_ts: str, updated_ts: str):
+    """Set file creation time and modification time from UTC timestamp strings.
+
+    On macOS/APFS, setting mtime to before current birthtime causes the
+    filesystem to pull birthtime back automatically. We exploit this:
+      1. Set mtime to created_ts (older) → birthtime snaps to it
+      2. Set mtime to updated_ts (newer) → birthtime stays at step 1
+    """
+    created_dt = _utc_to_local(created_ts)
+    updated_dt = _utc_to_local(updated_ts)
+    if not created_dt or not updated_dt:
+        return
+
+    created_epoch = created_dt.timestamp()
+    updated_epoch = updated_dt.timestamp()
+
+    # Step 1: pull birthtime back to the conversation creation time
+    os.utime(path, (created_epoch, created_epoch))
+    # Step 2: set mtime to the last update time; birthtime stays early
+    os.utime(path, (updated_epoch, updated_epoch))
+
+
+def _set_file_times_from_conv(path: Path, conv: dict):
+    """Set file birthtime/mtime from the first and last message timestamps."""
+    messages = conv.get("chat_messages", [])
+    if not messages:
+        created = conv.get("created_at", "")
+        updated = conv.get("updated_at", "") or created
+    else:
+        created = messages[0].get("created_at", "") or conv.get("created_at", "")
+        updated = messages[-1].get("created_at", "") or conv.get("updated_at", "")
+    if created and updated:
+        _set_file_times(path, created, updated)
 
 
 def write_conversation_json(conv: dict) -> Path:
@@ -25,6 +89,7 @@ def write_conversation_json(conv: dict) -> Path:
     with open(path, "w", encoding="utf-8") as f:
         json.dump(output, f, ensure_ascii=False, indent=2)
 
+    _set_file_times_from_conv(path, conv)
     logger.info("Wrote JSON: %s", path.name)
     return path
 
@@ -40,8 +105,8 @@ def write_conversation_md(conv: dict) -> Path:
     lines.append(f"<!-- uuid: {conv['uuid']} -->")
     lines.append(f"# {conv.get('name', 'Untitled')}\n")
 
-    created = conv.get("created_at", "")[:10]
-    updated = conv.get("updated_at", "")[:10]
+    created = _local_date(conv.get("created_at", ""))
+    updated = _local_date(conv.get("updated_at", ""))
     msg_count = len(conv.get("chat_messages", []))
     model = conv.get("model", "")
     meta_parts = []
@@ -60,7 +125,7 @@ def write_conversation_md(conv: dict) -> Path:
     for msg in conv.get("chat_messages", []):
         sender = msg.get("sender", "unknown")
         role = "Human" if sender == "human" else "Assistant"
-        timestamp = _format_timestamp(msg.get("created_at", ""))
+        timestamp = _local_datetime(msg.get("created_at", ""))
 
         lines.append(f"## {role}")
         if timestamp:
@@ -75,6 +140,7 @@ def write_conversation_md(conv: dict) -> Path:
     with open(path, "w", encoding="utf-8") as f:
         f.write(content)
 
+    _set_file_times_from_conv(path, conv)
     logger.info("Wrote MD: %s", filename)
     return path
 
@@ -82,7 +148,7 @@ def write_conversation_md(conv: dict) -> Path:
 def build_md_filename(conv: dict) -> str:
     """Build a safe filename like '对话标题_2026-03-07.md'."""
     title = conv.get("name", "Untitled")
-    created = conv.get("created_at", "")[:10]
+    created = _local_date(conv.get("created_at", ""))
 
     safe_title = sanitize_filename(title)
     if not safe_title:
@@ -134,17 +200,6 @@ def get_message_text(msg: dict) -> str:
         if isinstance(block, dict) and block.get("type") == "text":
             parts.append(block.get("text", ""))
     return "\n".join(parts)
-
-
-def _format_timestamp(ts: str) -> str:
-    """Convert '2026-03-07T11:28:32.650019Z' -> '2026-03-07 11:28:32'."""
-    if not ts:
-        return ""
-    ts = ts.replace("T", " ")
-    if "." in ts:
-        ts = ts[:ts.index(".")]
-    ts = ts.rstrip("Z")
-    return ts
 
 
 def write_memories(memories_data, export_date: str) -> Path | None:

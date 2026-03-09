@@ -101,6 +101,10 @@ def ingest_full_export(zip_path: Path) -> Path | None:
         with zipfile.ZipFile(zip_path, "r") as zf:
             zf.extractall(dest)
         logger.info("Extracted full export: %s -> %s", zip_path.name, dest)
+        trash_dir = FULL_DIR / "_imported_zips"
+        trash_dir.mkdir(exist_ok=True)
+        shutil.move(str(zip_path), str(trash_dir / zip_path.name))
+        logger.info("Moved zip to: %s", trash_dir / zip_path.name)
         return dest
     except (zipfile.BadZipFile, OSError) as e:
         logger.error("Failed to extract %s: %s", zip_path.name, e)
@@ -118,26 +122,26 @@ def ingest_single_export(json_path: Path) -> Path | None:
 
     try:
         _wait_for_stable_size(json_path)
-        shutil.copy2(json_path, dest)
-        logger.info("Copied single export: %s", json_path.name)
+        shutil.move(str(json_path), str(dest))
+        logger.info("Moved single export: %s", json_path.name)
         return dest
     except OSError as e:
-        logger.error("Failed to copy %s: %s", json_path.name, e)
+        logger.error("Failed to move %s: %s", json_path.name, e)
         return None
 
 
 def ingest_single_export_md(md_path: Path) -> Path | None:
-    """Copy a companion .md file to single/ directory."""
+    """Move a companion .md file to single/ directory."""
     SINGLE_DIR.mkdir(parents=True, exist_ok=True)
     dest = SINGLE_DIR / md_path.name
     if dest.exists():
         return dest
     try:
-        shutil.copy2(md_path, dest)
-        logger.info("Copied single export MD: %s", md_path.name)
+        shutil.move(str(md_path), str(dest))
+        logger.info("Moved single export MD: %s", md_path.name)
         return dest
     except OSError as e:
-        logger.error("Failed to copy MD %s: %s", md_path.name, e)
+        logger.error("Failed to move MD %s: %s", md_path.name, e)
         return None
 
 
