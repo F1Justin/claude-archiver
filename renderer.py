@@ -189,17 +189,80 @@ def sanitize_filename(name: str) -> str:
 
 
 def get_message_text(msg: dict) -> str:
-    """Extract readable text from a message."""
-    text = msg.get("text", "")
-    if text:
-        return text
-
+    """Extract readable text from a message, including tool_use/tool_result."""
     content_blocks = msg.get("content", [])
+
+    has_tool = any(
+        isinstance(b, dict) and b.get("type") in ("tool_use", "tool_result")
+        for b in content_blocks
+    )
+    if not has_tool:
+        text = msg.get("text", "")
+        if text:
+            return text
     parts = []
     for block in content_blocks:
-        if isinstance(block, dict) and block.get("type") == "text":
+        if not isinstance(block, dict):
+            continue
+        btype = block.get("type", "")
+
+        if btype == "text":
             parts.append(block.get("text", ""))
-    return "\n".join(parts)
+
+        elif btype == "tool_use":
+            name = block.get("name", "tool")
+            inp = block.get("input", {})
+            parts.append(f"**[工具调用: {name}]**")
+            if isinstance(inp, dict):
+                rendered = _render_tool_input(inp)
+                if rendered:
+                    parts.append(rendered)
+
+        elif btype == "tool_result":
+            content = block.get("content", [])
+            if isinstance(content, str) and content:
+                parts.append(f"**[工具结果]**\n\n{content}")
+            elif isinstance(content, list):
+                for sub in content:
+                    if isinstance(sub, dict) and sub.get("type") == "text":
+                        raw = sub.get("text", "")
+                        parts.append(f"**[工具结果]**\n\n{_try_format_json(raw)}")
+
+    return "\n\n".join(p for p in parts if p)
+
+
+def _render_tool_input(inp: dict) -> str:
+    """Render tool input as readable Markdown."""
+    kind = inp.get("kind", "")
+    variants = inp.get("variants", [])
+
+    if kind == "email" and variants:
+        sections = []
+        for v in variants:
+            label = v.get("label", "")
+            subject = v.get("subject", "")
+            body = v.get("body", "")
+            header = f"**{label}**" if label else ""
+            if subject:
+                header += f"\n> Subject: {subject}"
+            if header:
+                sections.append(header)
+            if body:
+                sections.append(body)
+        return "\n\n".join(sections)
+
+    if inp:
+        return _try_format_json(json.dumps(inp, ensure_ascii=False))
+    return ""
+
+
+def _try_format_json(text: str) -> str:
+    """If text is a JSON string, pretty-print it; otherwise return as-is."""
+    try:
+        parsed = json.loads(text)
+        return "```json\n" + json.dumps(parsed, ensure_ascii=False, indent=2) + "\n```"
+    except (json.JSONDecodeError, TypeError):
+        return text
 
 
 def write_memories(memories_data, export_date: str) -> Path | None:
