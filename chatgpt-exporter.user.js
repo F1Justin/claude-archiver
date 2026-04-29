@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Local JSON Exporter
 // @namespace    local.chatgpt.exporter
-// @version      0.3.1
+// @version      0.3.2
 // @description  Export the current ChatGPT conversation as JSON. No third-party uploads.
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -12,12 +12,11 @@
 (() => {
   "use strict";
 
-  const EXPORTER_VERSION = "0.3.1";
+  const EXPORTER_VERSION = "0.3.2";
   const BUTTON_ID = "local-json-exporter-button";
   const PANEL_ID = "local-json-exporter-panel";
   const SENSITIVE_KEY_PATTERN = /token|authorization|cookie|secret/i;
-  const CHATGPT_CITATION_RE = /\uE200cite\uE202([^\uE201]+)\uE201/g;
-  const CHATGPT_CITATION_SEPARATOR_RE = /\uE202/g;
+  const CHATGPT_PRIVATE_CITE_RE = /\uE200cite\uE202[^\uE201]+\uE201/g;
 
   const sameOriginFetchJson = async (url, init = {}) => {
     const response = await fetch(url, {
@@ -138,39 +137,9 @@
     metadata.model ||
     null;
 
-  const firstValue = (item, keys) => {
-    if (!item || typeof item !== "object") return null;
-    for (const key of keys) {
-      if (item[key] != null && item[key] !== "") return item[key];
-    }
-    return null;
-  };
-
-  const compactObject = (item) =>
-    Object.fromEntries(
-      Object.entries(item).filter(([, value]) => {
-        if (value == null || value === "") return false;
-        if (Array.isArray(value) && value.length === 0) return false;
-        return true;
-      })
-    );
-
-  const extractCitationMarkers = (text = "") => {
-    const markers = [];
-    for (const match of text.matchAll(CHATGPT_CITATION_RE)) {
-      markers.push(
-        ...match[1]
-          .split(CHATGPT_CITATION_SEPARATOR_RE)
-          .map((part) => part.trim())
-          .filter(Boolean)
-      );
-    }
-    return Array.from(new Set(markers));
-  };
-
-  const stripCitationMarkers = (text = "") =>
+  const stripPrivateCitationMarkup = (text = "") =>
     text
-      .replace(CHATGPT_CITATION_RE, "")
+      .replace(CHATGPT_PRIVATE_CITE_RE, "")
       .replace(/[ \t]+(\n|$)/g, "$1")
       .replace(/\n{3,}/g, "\n\n")
       .trim();
@@ -197,79 +166,6 @@
       "user_editable_context",
       "execution_output",
     ].includes(contentType);
-  };
-
-  const compactCitation = (citation, extra = {}) => {
-    if (!citation || typeof citation !== "object") return citation;
-    return compactObject({
-      type: firstValue(citation, ["type", "content_type", "source_type"]),
-      title: firstValue(citation, ["title", "name", "site_name", "source_name"]),
-      url: firstValue(citation, ["url", "href", "uri", "source_url"]),
-      source: firstValue(citation, ["source", "attribution", "publisher", "domain"]),
-      ref_id: firstValue(citation, ["ref_id", "reference_id", "id", "marker", "turn_id"]),
-      start_ix: citation.start_ix ?? citation.start_index ?? citation.start_idx ?? null,
-      end_ix: citation.end_ix ?? citation.end_index ?? citation.end_idx ?? null,
-      cited_text: firstValue(citation, ["cited_text", "text", "matched_text"]),
-      snippet: firstValue(citation, ["snippet", "description", "preview"]),
-      pub_date: firstValue(citation, ["pub_date", "published_at", "date"]),
-      ...extra,
-    });
-  };
-
-  const compactContentReference = (reference, extra = {}) => {
-    if (!reference || typeof reference !== "object") return reference;
-    return compactCitation(reference, extra);
-  };
-
-  const expandContentReference = (reference) => {
-    if (!reference || typeof reference !== "object") return [];
-    const nestedArrays = [
-      reference.items,
-      reference.webpages,
-      reference.pages,
-      reference.sources,
-      reference.results,
-      reference.entries,
-    ].filter(Array.isArray);
-
-    if (!nestedArrays.length) return [compactContentReference(reference)].filter((item) => item && Object.keys(item).length);
-
-    return nestedArrays
-      .flat()
-      .map((item, index) =>
-        compactContentReference(item, {
-          group_type: reference.type || null,
-          group_title: reference.title || reference.name || null,
-          group_index: index,
-        })
-      )
-      .filter((item) => item && Object.keys(item).length);
-  };
-
-  const extractCitations = (metadata = {}, text = "") => {
-    const citations = [];
-
-    if (Array.isArray(metadata.citations)) {
-      citations.push(...metadata.citations.map(compactCitation));
-    }
-
-    if (Array.isArray(metadata.content_references)) {
-      citations.push(...metadata.content_references.flatMap(expandContentReference));
-    }
-
-    const seen = new Set();
-    const deduped = citations.filter((item) => {
-      if (!item) return false;
-      const key = JSON.stringify(item);
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-
-    return {
-      citations: deduped,
-      citation_markers: extractCitationMarkers(text),
-    };
   };
 
   const compactAttachment = (item) => {
@@ -365,8 +261,6 @@
       is_complete: metadata.is_complete ?? null,
       is_visible: !isHidden,
       finish_details: metadata.finish_details || null,
-      citations: metadata.citations || [],
-      content_references: metadata.content_references || [],
       search_queries: metadata.search_queries || [],
       search_result_groups: metadata.search_result_groups || [],
       metadata,
@@ -432,13 +326,12 @@
         const content = sanitizeForExport(message.content || {});
         const metadata = sanitizeForExport(message.metadata || {});
         const rawText = extractTextFromContent(content).trim();
-        const text = stripCitationMarkers(rawText);
+        const text = stripPrivateCitationMarkup(rawText);
         if (!text) return null;
 
         const createdAt = toIso(message.create_time);
         const updatedAt = toIso(message.update_time) || createdAt;
         const sender = message.author?.role === "user" ? "human" : "assistant";
-        const citationData = extractCitations(metadata, rawText);
         const attachments = extractAttachments(message);
         const model = getModelSlug(metadata);
 
@@ -451,8 +344,6 @@
               stop_timestamp: updatedAt,
               type: "text",
               text,
-              citations: citationData.citations,
-              citation_markers: citationData.citation_markers,
             },
           ],
           sender,
@@ -482,7 +373,6 @@
     });
 
     const models = Array.from(new Set(normalized.map((message) => message.model).filter(Boolean)));
-    const hasWebSearch = normalized.some((message) => message.content?.some((part) => part.citations?.length));
 
     return {
       uuid: conversation?.conversation_id || conversation?.id || getConversationId(),
@@ -493,7 +383,6 @@
       updated_at: toIso(conversation?.update_time) || normalized[normalized.length - 1]?.updated_at || null,
       account: {},
       settings: {
-        enabled_web_search: hasWebSearch,
         models,
         source: "chatgpt_web_backend",
         exporter: "ChatGPT Local JSON Exporter",
@@ -517,7 +406,6 @@
           stop_timestamp: null,
           type: "text",
           text: message.text,
-          citations: [],
         },
       ],
       sender: message.role === "assistant" ? "assistant" : "human",
@@ -540,7 +428,6 @@
       updated_at: null,
       account: {},
       settings: {
-        enabled_web_search: false,
         models: [],
         source: "chatgpt_dom_fallback",
         exporter: "ChatGPT Local JSON Exporter",
@@ -549,10 +436,7 @@
       platform: "CHATGPT",
       is_starred: false,
       chat_messages: chatMessages,
-      export_warnings: [
-        "Backend conversation JSON was unavailable. This file contains only text visible in the rendered page.",
-        ...(session ? [] : ["Session metadata was unavailable."]),
-      ],
+      export_warnings: ["Backend API unavailable; exported visible page text only."],
     };
   };
 
@@ -652,7 +536,6 @@
 
     if (exportOptions.format !== "full") {
       const compactPayload = buildClaudeLikeFallback(conversationId, rawSession);
-      if (fullPayload.errors.length) compactPayload.export_warnings.push(...fullPayload.errors.map((error) => `${error.step}: ${error.message}`));
       downloadJson(compactPayload);
       return compactPayload;
     }
