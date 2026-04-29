@@ -79,10 +79,10 @@ def _set_file_times_from_conv(path: Path, conv: dict):
         _set_file_times(path, created, updated)
 
 
-def write_conversation_json(conv: dict) -> Path:
+def write_conversation_json(conv: dict, json_dir: Path = JSON_DIR) -> Path:
     """Write a merged conversation to json/{uuid}.json."""
-    JSON_DIR.mkdir(parents=True, exist_ok=True)
-    path = JSON_DIR / f"{conv['uuid']}.json"
+    json_dir.mkdir(parents=True, exist_ok=True)
+    path = json_dir / f"{conv['uuid']}.json"
 
     output = {k: v for k, v in conv.items() if k != "_source"}
 
@@ -94,12 +94,12 @@ def write_conversation_json(conv: dict) -> Path:
     return path
 
 
-def write_conversation_md(conv: dict) -> Path:
+def write_conversation_md(conv: dict, md_dir: Path = MD_DIR) -> Path:
     """Write a conversation as a readable Markdown file."""
-    MD_DIR.mkdir(parents=True, exist_ok=True)
+    md_dir.mkdir(parents=True, exist_ok=True)
 
-    filename = build_md_filename(conv)
-    path = MD_DIR / filename
+    filename = build_md_filename(conv, md_dir=md_dir)
+    path = md_dir / filename
 
     lines = []
     lines.append(f"<!-- uuid: {conv['uuid']} -->")
@@ -145,7 +145,7 @@ def write_conversation_md(conv: dict) -> Path:
     return path
 
 
-def build_md_filename(conv: dict) -> str:
+def build_md_filename(conv: dict, md_dir: Path = MD_DIR) -> str:
     """Build a safe filename like '对话标题_2026-03-07.md'."""
     title = conv.get("name", "Untitled")
     created = _local_date(conv.get("created_at", ""))
@@ -160,7 +160,7 @@ def build_md_filename(conv: dict) -> str:
     base = f"{safe_title}_{created}" if created else safe_title
 
     candidate = f"{base}.md"
-    existing = MD_DIR / candidate
+    existing = md_dir / candidate
     if existing.exists():
         existing_uuid = _read_uuid_from_md(existing)
         if existing_uuid and existing_uuid != conv["uuid"]:
@@ -265,14 +265,14 @@ def _try_format_json(text: str) -> str:
         return text
 
 
-def write_memories(memories_data, export_date: str) -> Path | None:
+def write_memories(memories_data, export_date: str, memories_dir: Path = MEMORIES_DIR) -> Path | None:
     """Write memories to memories/memories_YYYY-MM-DD.json."""
     if not memories_data:
         return None
 
-    MEMORIES_DIR.mkdir(parents=True, exist_ok=True)
+    memories_dir.mkdir(parents=True, exist_ok=True)
     filename = f"memories_{export_date}.json"
-    path = MEMORIES_DIR / filename
+    path = memories_dir / filename
 
     with open(path, "w", encoding="utf-8") as f:
         json.dump(memories_data, f, ensure_ascii=False, indent=2)
@@ -281,12 +281,12 @@ def write_memories(memories_data, export_date: str) -> Path | None:
     return path
 
 
-def cleanup_stale_md(conv: dict):
+def cleanup_stale_md(conv: dict, md_dir: Path = MD_DIR):
     """Remove old md files for a conversation if the title changed."""
     uuid = conv["uuid"]
-    current_filename = build_md_filename(conv)
+    current_filename = build_md_filename(conv, md_dir=md_dir)
 
-    for md_file in MD_DIR.glob("*.md"):
+    for md_file in md_dir.glob("*.md"):
         if md_file.name == current_filename:
             continue
         try:

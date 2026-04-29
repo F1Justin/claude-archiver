@@ -1,9 +1,9 @@
 """
-Unified parser for Claude chat exports.
+Unified parser for normalized LLM chat exports.
 
 Handles two formats:
-- full export: JSON array of conversations from conversations.json
-- single export: single conversation JSON object (Claude_*.json)
+- Claude full export: JSON array of conversations from conversations.json
+- single export: normalized conversation JSON object (Claude_*.json or ChatGPT_*.json)
 """
 
 import json
@@ -95,7 +95,7 @@ def parse_full_export_dir(dir_path: Path) -> list[dict]:
 
 
 def parse_single_export(file_path: Path) -> dict | None:
-    """Parse a single conversation export (Claude_*.json)."""
+    """Parse a single normalized conversation export."""
     data = load_json_unicode_safe(file_path)
     if not isinstance(data, dict) or "uuid" not in data:
         logger.warning("Invalid single export: %s", file_path)

@@ -1,5 +1,5 @@
 """
-Message-level merge/dedup engine for Claude conversations.
+Message-level merge/dedup engine for LLM conversations.
 
 Merges conversations by UUID, taking the union of all messages (by message UUID)
 so that no content is ever lost. When the same message appears in multiple sources,
@@ -16,7 +16,7 @@ from parser import _deep_decode_unicode
 logger = logging.getLogger(__name__)
 
 
-def merge_all_conversations(conversation_groups: dict[str, list[dict]]) -> list[dict]:
+def merge_all_conversations(conversation_groups: dict[str, list[dict]], json_dir: Path = JSON_DIR) -> list[dict]:
     """
     Merge conversations from all sources.
 
@@ -29,7 +29,7 @@ def merge_all_conversations(conversation_groups: dict[str, list[dict]]) -> list[
     """
     merged = []
     for conv_uuid, versions in conversation_groups.items():
-        existing = load_existing_json(conv_uuid)
+        existing = load_existing_json(conv_uuid, json_dir=json_dir)
         if existing:
             versions.insert(0, existing)
         result = merge_conversation_versions(versions)
@@ -88,9 +88,9 @@ def _find_field_in_versions(versions: list[dict], field: str):
     return "" if field != "settings" else {}
 
 
-def load_existing_json(conv_uuid: str) -> dict | None:
+def load_existing_json(conv_uuid: str, json_dir: Path = JSON_DIR) -> dict | None:
     """Load an existing merged conversation from json/ if it exists."""
-    path = JSON_DIR / f"{conv_uuid}.json"
+    path = json_dir / f"{conv_uuid}.json"
     if not path.exists():
         return None
     try:
@@ -110,9 +110,9 @@ def group_conversations(all_conversations: list[dict]) -> dict[str, list[dict]]:
     return groups
 
 
-def count_new_rounds(conv_uuid: str, new_conv: dict) -> int:
+def count_new_rounds(conv_uuid: str, new_conv: dict, json_dir: Path = JSON_DIR) -> int:
     """Count how many new human-assistant rounds were added compared to stored version."""
-    existing = load_existing_json(conv_uuid)
+    existing = load_existing_json(conv_uuid, json_dir=json_dir)
     old_uuids = {m["uuid"] for m in existing.get("chat_messages", [])} if existing else set()
     new_human = sum(
         1 for m in new_conv.get("chat_messages", [])
@@ -121,9 +121,9 @@ def count_new_rounds(conv_uuid: str, new_conv: dict) -> int:
     return max(new_human, 1) if not existing else new_human
 
 
-def has_changed(conv_uuid: str, new_conv: dict) -> bool:
+def has_changed(conv_uuid: str, new_conv: dict, json_dir: Path = JSON_DIR) -> bool:
     """Check if a conversation has actually changed compared to the stored version."""
-    existing = load_existing_json(conv_uuid)
+    existing = load_existing_json(conv_uuid, json_dir=json_dir)
     if existing is None:
         return True
 

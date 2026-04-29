@@ -1,7 +1,7 @@
 """
 File system watcher for ~/Downloads.
 
-Detects Claude export files and moves them to the archive,
+Detects LLM export files and moves them to the archive,
 then triggers the processing pipeline.
 """
 
@@ -21,9 +21,9 @@ from config import (
     DOWNLOADS_DIR,
     FULL_DIR,
     FULL_EXPORT_PATTERN,
-    SINGLE_DIR,
-    SINGLE_EXPORT_MD_PATTERN,
-    SINGLE_EXPORT_PATTERN,
+    archive_dirs_for_platform,
+    platform_for_single_export_md_name,
+    platform_for_single_export_name,
 )
 
 logger = logging.getLogger(__name__)
@@ -68,18 +68,18 @@ class DownloadHandler(FileSystemEventHandler):
             if result:
                 moved_paths.append(result)
 
-        elif re.match(SINGLE_EXPORT_PATTERN, name):
-            result = ingest_single_export(path)
+        elif platform := platform_for_single_export_name(name):
+            result = ingest_single_export(path, platform=platform)
             if result:
                 moved_paths.append(result)
             md_companion = path.with_suffix(".md")
             if md_companion.exists():
-                ingest_single_export_md(md_companion)
+                ingest_single_export_md(md_companion, platform=platform)
 
-        elif re.match(SINGLE_EXPORT_MD_PATTERN, name):
+        elif platform := platform_for_single_export_md_name(name):
             json_companion = path.with_suffix(".json")
             if not json_companion.exists():
-                ingest_single_export_md(path)
+                ingest_single_export_md(path, platform=platform)
 
         if moved_paths:
             self._callback(moved_paths)
@@ -111,10 +111,12 @@ def ingest_full_export(zip_path: Path) -> Path | None:
         return None
 
 
-def ingest_single_export(json_path: Path) -> Path | None:
-    """Move a Claude_*.json to single/ directory."""
-    SINGLE_DIR.mkdir(parents=True, exist_ok=True)
-    dest = SINGLE_DIR / json_path.name
+def ingest_single_export(json_path: Path, platform: str | None = None) -> Path | None:
+    """Move a single conversation JSON to the platform single/ directory."""
+    platform = platform or platform_for_single_export_name(json_path.name) or "CLAUDE_AI"
+    single_dir = archive_dirs_for_platform(platform)["single"]
+    single_dir.mkdir(parents=True, exist_ok=True)
+    dest = single_dir / json_path.name
 
     if dest.exists():
         logger.info("Single export already exists: %s", json_path.name)
@@ -130,10 +132,12 @@ def ingest_single_export(json_path: Path) -> Path | None:
         return None
 
 
-def ingest_single_export_md(md_path: Path) -> Path | None:
+def ingest_single_export_md(md_path: Path, platform: str | None = None) -> Path | None:
     """Move a companion .md file to single/ directory."""
-    SINGLE_DIR.mkdir(parents=True, exist_ok=True)
-    dest = SINGLE_DIR / md_path.name
+    platform = platform or platform_for_single_export_md_name(md_path.name) or "CLAUDE_AI"
+    single_dir = archive_dirs_for_platform(platform)["single"]
+    single_dir.mkdir(parents=True, exist_ok=True)
+    dest = single_dir / md_path.name
     if dest.exists():
         return dest
     try:
@@ -164,10 +168,10 @@ def _wait_for_stable_size(path: Path, interval: float = 0.5, checks: int = 3):
 
 
 def start_watcher(callback) -> Observer:
-    """Start watching ~/Downloads for Claude exports."""
+    """Start watching ~/Downloads for LLM exports."""
     observer = Observer()
     handler = DownloadHandler(callback)
     observer.schedule(handler, str(DOWNLOADS_DIR), recursive=False)
     observer.start()
-    logger.info("Watching %s for Claude exports...", DOWNLOADS_DIR)
+    logger.info("Watching %s for LLM exports...", DOWNLOADS_DIR)
     return observer
