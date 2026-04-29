@@ -391,7 +391,6 @@
       platform: "CHATGPT",
       is_starred: conversation?.is_starred ?? false,
       chat_messages: normalized,
-      export_warnings: session ? [] : ["Session metadata was unavailable; conversation may have been exported from fallback data."],
     };
   };
 
@@ -436,7 +435,6 @@
       platform: "CHATGPT",
       is_starred: false,
       chat_messages: chatMessages,
-      export_warnings: ["Backend API unavailable; exported visible page text only."],
     };
   };
 
@@ -624,8 +622,7 @@
       try {
         const payload = await exportCurrentConversation();
         const messageCount = payload.chat_messages?.length || payload.conversation?.message_count || 0;
-        const warningCount = payload.export_warnings?.length || payload.errors?.length || 0;
-        showStatus(`JSON exported. Messages: ${messageCount}. Warnings: ${warningCount}.`, warningCount > 0);
+        showStatus(`JSON exported. Messages: ${messageCount}.`);
       } catch (error) {
         console.error("[local-json-exporter]", error);
         showStatus(`Export failed: ${error.message}`, true);
