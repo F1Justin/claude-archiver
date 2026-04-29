@@ -14,6 +14,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 _UNICODE_ESCAPE_RE = re.compile(r"\\u([0-9a-fA-F]{4})")
+_SURROGATE_PAIR_RE = re.compile(r"\\u([dD][89aAbB][0-9a-fA-F]{2})\\u([dD][c-fC-F][0-9a-fA-F]{2})")
 
 
 def load_json_unicode_safe(path: Path) -> dict | list:
@@ -23,11 +24,49 @@ def load_json_unicode_safe(path: Path) -> dict | list:
     return _deep_decode_unicode(data)
 
 
+def _decode_surrogate_pair(high: int, low: int) -> str:
+    """Combine a UTF-16 surrogate pair into the actual Unicode character."""
+    code_point = 0x10000 + (high - 0xD800) * 0x400 + (low - 0xDC00)
+    return chr(code_point)
+
+
+def _fix_surrogates(s: str) -> str:
+    """Replace lone surrogate chars (from json.load) with the correct codepoint."""
+    result = []
+    i = 0
+    while i < len(s):
+        c = s[i]
+        cp = ord(c)
+        if 0xD800 <= cp <= 0xDBFF and i + 1 < len(s):
+            low = ord(s[i + 1])
+            if 0xDC00 <= low <= 0xDFFF:
+                result.append(_decode_surrogate_pair(cp, low))
+                i += 2
+                continue
+        result.append(c)
+        i += 1
+    return "".join(result)
+
+
 def _deep_decode_unicode(obj):
-    """Recursively decode literal \\uXXXX sequences embedded in string values."""
+    """Recursively decode literal \\uXXXX sequences and fix surrogate pairs."""
     if isinstance(obj, str):
+        # First fix any lone surrogates already decoded by json.load
+        # (happens when source JSON has \\uD83D\\uDC4D emoji surrogate pairs)
+        try:
+            obj.encode("utf-8")
+        except UnicodeEncodeError:
+            obj = _fix_surrogates(obj)
+
+        # Then decode any remaining literal \\uXXXX escape sequences in the text
         if "\\u" in obj:
-            return _UNICODE_ESCAPE_RE.sub(lambda m: chr(int(m.group(1), 16)), obj)
+            # Handle surrogate pairs first (\\uD83D\\uDC4D -> 👍)
+            obj = _SURROGATE_PAIR_RE.sub(
+                lambda m: _decode_surrogate_pair(int(m.group(1), 16), int(m.group(2), 16)),
+                obj,
+            )
+            # Then handle remaining single escapes
+            obj = _UNICODE_ESCAPE_RE.sub(lambda m: chr(int(m.group(1), 16)), obj)
         return obj
     if isinstance(obj, list):
         return [_deep_decode_unicode(item) for item in obj]
