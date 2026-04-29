@@ -1,18 +1,20 @@
 // ==UserScript==
 // @name         ChatGPT Local JSON Exporter
 // @namespace    local.chatgpt.exporter
-// @version      0.4.0
+// @version      0.4.1
 // @description  Export the current ChatGPT conversation as JSON. No third-party uploads.
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
 // @run-at       document-idle
-// @grant        none
+// @grant        GM_xmlhttpRequest
+// @connect      127.0.0.1
+// @connect      localhost
 // ==/UserScript==
 
 (() => {
   "use strict";
 
-  const EXPORTER_VERSION = "0.4.0";
+  const EXPORTER_VERSION = "0.4.1";
   const BUTTON_ID = "local-json-exporter-button";
   const PANEL_ID = "local-json-exporter-panel";
   const SYNC_BADGE_ID = "local-json-exporter-sync-badge";
@@ -21,7 +23,7 @@
   const CHATGPT_PRIVATE_CITE_RE = /\uE200cite\uE202[^\uE201]+\uE201/g;
 
   const sameOriginFetchJson = async (url, init = {}) => {
-    const response = await fetch(url, {
+    const response = await window.fetch(url, {
       credentials: "include",
       cache: "no-store",
       ...init,
@@ -483,16 +485,43 @@
     if (!payload.uuid) {
       return { status: "no_conversation", synced: false };
     }
+    return postStatusJson(buildStatusRequest(payload));
+  };
 
-    const response = await fetch(STATUS_API_URL, {
+  const postStatusJson = (payload) => {
+    if (typeof GM_xmlhttpRequest === "function") {
+      return new Promise((resolve, reject) => {
+        GM_xmlhttpRequest({
+          method: "POST",
+          url: STATUS_API_URL,
+          headers: { "Content-Type": "application/json" },
+          data: JSON.stringify(payload),
+          timeout: 5000,
+          onload: (response) => {
+            if (response.status < 200 || response.status >= 300) {
+              reject(new Error(`Status API failed: ${response.status}`));
+              return;
+            }
+            try {
+              resolve(JSON.parse(response.responseText || "{}"));
+            } catch (error) {
+              reject(error);
+            }
+          },
+          onerror: () => reject(new Error("Status API request failed")),
+          ontimeout: () => reject(new Error("Status API request timed out")),
+        });
+      });
+    }
+
+    return window.fetch(STATUS_API_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(buildStatusRequest(payload)),
+      body: JSON.stringify(payload),
+    }).then((response) => {
+      if (!response.ok) throw new Error(`Status API failed: ${response.status}`);
+      return response.json();
     });
-    if (!response.ok) {
-      throw new Error(`Status API failed: ${response.status}`);
-    }
-    return response.json();
   };
 
   const makeFilename = (payload) => {
@@ -713,7 +742,8 @@
       const status = await fetchArchiveStatus();
       const rendered = statusText(status);
       renderSyncBadge(rendered.text, rendered.tone);
-    } catch {
+    } catch (error) {
+      console.warn("[local-json-exporter] status check failed", error);
       renderSyncBadge("Status offline", "error");
     }
   };
