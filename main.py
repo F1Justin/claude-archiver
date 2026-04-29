@@ -26,6 +26,7 @@ from config import (
 from merger import count_new_rounds, group_conversations, has_changed, merge_all_conversations
 from parser import extract_memories, parse_full_export_dir, parse_single_export
 from renderer import cleanup_stale_md, write_conversation_json, write_conversation_md, write_memories
+from status_server import start_status_server
 from watcher import ingest_full_export, ingest_single_export, ingest_single_export_md, start_watcher
 
 logger = logging.getLogger(__name__)
@@ -184,11 +185,19 @@ def main():
 
     if args.daemon:
         observer = start_watcher(on_new_files)
+        try:
+            status_server = start_status_server()
+        except OSError as e:
+            status_server = None
+            logger.warning("Status server unavailable: %s", e)
 
         def shutdown(signum, frame):
             logger.info("Shutting down...")
             observer.stop()
             observer.join()
+            if status_server:
+                status_server.shutdown()
+                status_server.server_close()
             sys.exit(0)
 
         signal.signal(signal.SIGINT, shutdown)

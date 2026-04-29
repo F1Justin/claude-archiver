@@ -50,10 +50,15 @@ python main.py --daemon
 python main.py --scan --daemon
 ```
 
+When running with `--daemon`, the archiver also starts a local read-only status
+API at `http://127.0.0.1:8765/status`. The ChatGPT userscript uses this API to
+show whether the current page is already archived, not archived yet, or behind
+by a number of human turns.
+
 ## Export Scripts
 
 - `claude-exporter.user.js` exports Claude conversations as the existing Claude-compatible JSON.
-- `chatgpt-exporter.user.js` exports ChatGPT conversations in the same normalized schema and downloads files named `ChatGPT_<title>_<timestamp>.json`.
+- `chatgpt-exporter.user.js` exports ChatGPT conversations in the same normalized schema, downloads files named `ChatGPT_<title>_<timestamp>.json`, and shows local archive sync status beside the export button.
 
 Install the relevant userscript with Tampermonkey or Violentmonkey, export a conversation, and the watcher will move it from `~/Downloads` into the correct platform archive.
 

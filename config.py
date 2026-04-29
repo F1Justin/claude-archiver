@@ -73,3 +73,11 @@ def platform_for_single_export_md_name(name: str) -> str | None:
 
 # Debounce delay (seconds) to wait for file write completion
 DEBOUNCE_SECONDS = 2.0
+
+# Local read-only status API for userscripts.
+STATUS_HOST = "127.0.0.1"
+STATUS_PORT = 8765
+STATUS_ALLOWED_ORIGINS = {
+    "https://chatgpt.com",
+    "https://chat.openai.com",
+}

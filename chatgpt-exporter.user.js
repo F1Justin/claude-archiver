@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Local JSON Exporter
 // @namespace    local.chatgpt.exporter
-// @version      0.3.2
+// @version      0.4.0
 // @description  Export the current ChatGPT conversation as JSON. No third-party uploads.
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -12,9 +12,11 @@
 (() => {
   "use strict";
 
-  const EXPORTER_VERSION = "0.3.2";
+  const EXPORTER_VERSION = "0.4.0";
   const BUTTON_ID = "local-json-exporter-button";
   const PANEL_ID = "local-json-exporter-panel";
+  const SYNC_BADGE_ID = "local-json-exporter-sync-badge";
+  const STATUS_API_URL = "http://127.0.0.1:8765/status";
   const SENSITIVE_KEY_PATTERN = /token|authorization|cookie|secret/i;
   const CHATGPT_PRIVATE_CITE_RE = /\uE200cite\uE202[^\uE201]+\uE201/g;
 
@@ -438,6 +440,61 @@
     };
   };
 
+  const getCurrentArchivePayload = async () => {
+    const conversationId = getConversationId();
+    let rawSession = null;
+    try {
+      rawSession = await sameOriginFetchJson("/api/auth/session");
+    } catch {
+      rawSession = null;
+    }
+
+    if (conversationId) {
+      try {
+        let headers = {};
+        const accessToken = rawSession?.accessToken || rawSession?.access_token;
+        if (accessToken) {
+          headers = { Authorization: `Bearer ${accessToken}` };
+        }
+        const rawConversation = await sameOriginFetchJson(`/backend-api/conversation/${conversationId}`, { headers });
+        return buildClaudeLikeConversation(rawConversation, rawSession);
+      } catch {
+        return buildClaudeLikeFallback(conversationId, rawSession);
+      }
+    }
+
+    return buildClaudeLikeFallback(conversationId, rawSession);
+  };
+
+  const buildStatusRequest = (payload) => ({
+    platform: "CHATGPT",
+    uuid: payload.uuid,
+    updated_at: payload.updated_at,
+    messages: (payload.chat_messages || []).map((message) => ({
+      uuid: message.uuid,
+      sender: message.sender,
+      created_at: message.created_at,
+      updated_at: message.updated_at,
+    })),
+  });
+
+  const fetchArchiveStatus = async () => {
+    const payload = await getCurrentArchivePayload();
+    if (!payload.uuid) {
+      return { status: "no_conversation", synced: false };
+    }
+
+    const response = await fetch(STATUS_API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(buildStatusRequest(payload)),
+    });
+    if (!response.ok) {
+      throw new Error(`Status API failed: ${response.status}`);
+    }
+    return response.json();
+  };
+
   const makeFilename = (payload) => {
     const title = payload.name || payload.conversation?.title || "chatgpt-conversation";
     const safeTitle = title
@@ -592,6 +649,75 @@
     panel._hideTimer = setTimeout(() => panel.remove(), 6000);
   };
 
+  const renderSyncBadge = (text, tone = "muted") => {
+    let badge = document.getElementById(SYNC_BADGE_ID);
+    if (!badge) {
+      badge = document.createElement("button");
+      badge.id = SYNC_BADGE_ID;
+      badge.type = "button";
+      badge.title = "Local archive sync status. Click to refresh.";
+      badge.style.cssText = [
+        "position:fixed",
+        "right:16px",
+        "bottom:58px",
+        "z-index:2147483647",
+        "border:0",
+        "border-radius:8px",
+        "padding:6px 9px",
+        "font:600 12px system-ui,-apple-system,BlinkMacSystemFont,sans-serif",
+        "color:white",
+        "box-shadow:0 8px 24px rgba(0,0,0,.16)",
+        "cursor:pointer",
+      ].join(";");
+      badge.addEventListener("click", () => refreshSyncBadge(true));
+      document.documentElement.appendChild(badge);
+    }
+
+    const colors = {
+      synced: "#0f766e",
+      behind: "#b45309",
+      missing: "#7f1d1d",
+      muted: "#374151",
+      error: "#7f1d1d",
+    };
+    badge.textContent = text;
+    badge.style.background = colors[tone] || colors.muted;
+  };
+
+  const statusText = (status) => {
+    if (status.status === "synced") {
+      return { text: `Synced (${status.local_message_count || 0})`, tone: "synced" };
+    }
+    if (status.status === "behind") {
+      const turns = status.behind_turns || 0;
+      const messages = status.behind_messages || 0;
+      const unit = turns > 0 ? `${turns} turns` : `${messages} msgs`;
+      return { text: `Behind ${unit}`, tone: "behind" };
+    }
+    if (status.status === "not_archived") {
+      return { text: "Not archived", tone: "missing" };
+    }
+    if (status.status === "no_conversation") {
+      return { text: "No chat", tone: "muted" };
+    }
+    return { text: "Status unknown", tone: "muted" };
+  };
+
+  const refreshSyncBadge = async (manual = false) => {
+    if (!getConversationId()) {
+      renderSyncBadge("No chat", "muted");
+      return;
+    }
+    if (manual) renderSyncBadge("Checking...", "muted");
+    try {
+      const status = await fetchArchiveStatus();
+      const rendered = statusText(status);
+      renderSyncBadge(rendered.text, rendered.tone);
+    } catch {
+      renderSyncBadge("Status offline", "error");
+    }
+  };
+
   const installButton = () => {
     if (document.getElementById(BUTTON_ID)) return;
 
@@ -623,6 +749,7 @@
         const payload = await exportCurrentConversation();
         const messageCount = payload.chat_messages?.length || payload.conversation?.message_count || 0;
         showStatus(`JSON exported. Messages: ${messageCount}.`);
+        setTimeout(() => refreshSyncBadge(true), 1500);
       } catch (error) {
         console.error("[local-json-exporter]", error);
         showStatus(`Export failed: ${error.message}`, true);
@@ -637,6 +764,8 @@
 
   window.ChatGPTLocalJsonExporter = {
     exportCurrentConversation,
+    fetchArchiveStatus,
+    refreshSyncBadge,
     collectDomMessages,
     buildClaudeLikeConversation,
     sanitizeForExport,
@@ -644,4 +773,7 @@
   };
 
   installButton();
+  renderSyncBadge("Checking...", "muted");
+  refreshSyncBadge();
+  setInterval(refreshSyncBadge, 10000);
 })();
