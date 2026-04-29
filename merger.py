@@ -141,4 +141,30 @@ def has_changed(conv_uuid: str, new_conv: dict, json_dir: Path = JSON_DIR) -> bo
     if existing.get("summary") != new_conv.get("summary"):
         return True
 
+    if _message_signature(existing) != _message_signature(new_conv):
+        return True
+
     return False
+
+
+def _message_signature(conv: dict) -> str:
+    """Stable message-content signature used to catch exporter/schema fixes."""
+    fields = (
+        "uuid",
+        "text",
+        "content",
+        "sender",
+        "created_at",
+        "updated_at",
+        "attachments",
+        "files",
+        "files_v2",
+        "parent_message_uuid",
+        "model",
+    )
+    messages = [
+        {field: msg.get(field) for field in fields if field in msg}
+        for msg in conv.get("chat_messages", [])
+    ]
+    messages.sort(key=lambda msg: (msg.get("created_at") or "", msg.get("uuid") or ""))
+    return json.dumps(messages, ensure_ascii=False, sort_keys=True, separators=(",", ":"))

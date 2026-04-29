@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Local JSON Exporter
 // @namespace    local.chatgpt.exporter
-// @version      0.3.0
+// @version      0.3.1
 // @description  Export the current ChatGPT conversation as JSON. No third-party uploads.
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -12,10 +12,12 @@
 (() => {
   "use strict";
 
-  const EXPORTER_VERSION = "0.3.0";
+  const EXPORTER_VERSION = "0.3.1";
   const BUTTON_ID = "local-json-exporter-button";
   const PANEL_ID = "local-json-exporter-panel";
   const SENSITIVE_KEY_PATTERN = /token|authorization|cookie|secret/i;
+  const CHATGPT_CITATION_RE = /\uE200cite\uE202([^\uE201]+)\uE201/g;
+  const CHATGPT_CITATION_SEPARATOR_RE = /\uE202/g;
 
   const sameOriginFetchJson = async (url, init = {}) => {
     const response = await fetch(url, {
@@ -136,6 +138,43 @@
     metadata.model ||
     null;
 
+  const firstValue = (item, keys) => {
+    if (!item || typeof item !== "object") return null;
+    for (const key of keys) {
+      if (item[key] != null && item[key] !== "") return item[key];
+    }
+    return null;
+  };
+
+  const compactObject = (item) =>
+    Object.fromEntries(
+      Object.entries(item).filter(([, value]) => {
+        if (value == null || value === "") return false;
+        if (Array.isArray(value) && value.length === 0) return false;
+        return true;
+      })
+    );
+
+  const extractCitationMarkers = (text = "") => {
+    const markers = [];
+    for (const match of text.matchAll(CHATGPT_CITATION_RE)) {
+      markers.push(
+        ...match[1]
+          .split(CHATGPT_CITATION_SEPARATOR_RE)
+          .map((part) => part.trim())
+          .filter(Boolean)
+      );
+    }
+    return Array.from(new Set(markers));
+  };
+
+  const stripCitationMarkers = (text = "") =>
+    text
+      .replace(CHATGPT_CITATION_RE, "")
+      .replace(/[ \t]+(\n|$)/g, "$1")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+
   const isHiddenOrInternalMessage = (message) => {
     const metadata = message?.metadata || {};
     const contentType = message?.content?.content_type || null;
@@ -160,31 +199,54 @@
     ].includes(contentType);
   };
 
-  const compactCitation = (citation) => {
+  const compactCitation = (citation, extra = {}) => {
     if (!citation || typeof citation !== "object") return citation;
-    return {
-      type: citation.type || null,
-      title: citation.title || citation.name || null,
-      url: citation.url || citation.href || citation.uri || null,
-      start_ix: citation.start_ix ?? citation.start_index ?? null,
-      end_ix: citation.end_ix ?? citation.end_index ?? null,
-      cited_text: citation.cited_text || null,
-    };
+    return compactObject({
+      type: firstValue(citation, ["type", "content_type", "source_type"]),
+      title: firstValue(citation, ["title", "name", "site_name", "source_name"]),
+      url: firstValue(citation, ["url", "href", "uri", "source_url"]),
+      source: firstValue(citation, ["source", "attribution", "publisher", "domain"]),
+      ref_id: firstValue(citation, ["ref_id", "reference_id", "id", "marker", "turn_id"]),
+      start_ix: citation.start_ix ?? citation.start_index ?? citation.start_idx ?? null,
+      end_ix: citation.end_ix ?? citation.end_index ?? citation.end_idx ?? null,
+      cited_text: firstValue(citation, ["cited_text", "text", "matched_text"]),
+      snippet: firstValue(citation, ["snippet", "description", "preview"]),
+      pub_date: firstValue(citation, ["pub_date", "published_at", "date"]),
+      ...extra,
+    });
   };
 
-  const compactContentReference = (reference) => {
+  const compactContentReference = (reference, extra = {}) => {
     if (!reference || typeof reference !== "object") return reference;
-    return {
-      type: reference.type || null,
-      title: reference.title || reference.name || null,
-      url: reference.url || reference.href || reference.uri || null,
-      source: reference.source || reference.attribution || null,
-      start_ix: reference.start_ix ?? reference.start_index ?? null,
-      end_ix: reference.end_ix ?? reference.end_index ?? null,
-    };
+    return compactCitation(reference, extra);
   };
 
-  const extractCitations = (metadata = {}) => {
+  const expandContentReference = (reference) => {
+    if (!reference || typeof reference !== "object") return [];
+    const nestedArrays = [
+      reference.items,
+      reference.webpages,
+      reference.pages,
+      reference.sources,
+      reference.results,
+      reference.entries,
+    ].filter(Array.isArray);
+
+    if (!nestedArrays.length) return [compactContentReference(reference)].filter((item) => item && Object.keys(item).length);
+
+    return nestedArrays
+      .flat()
+      .map((item, index) =>
+        compactContentReference(item, {
+          group_type: reference.type || null,
+          group_title: reference.title || reference.name || null,
+          group_index: index,
+        })
+      )
+      .filter((item) => item && Object.keys(item).length);
+  };
+
+  const extractCitations = (metadata = {}, text = "") => {
     const citations = [];
 
     if (Array.isArray(metadata.citations)) {
@@ -192,17 +254,22 @@
     }
 
     if (Array.isArray(metadata.content_references)) {
-      citations.push(...metadata.content_references.map(compactContentReference));
+      citations.push(...metadata.content_references.flatMap(expandContentReference));
     }
 
     const seen = new Set();
-    return citations.filter((item) => {
+    const deduped = citations.filter((item) => {
       if (!item) return false;
       const key = JSON.stringify(item);
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
     });
+
+    return {
+      citations: deduped,
+      citation_markers: extractCitationMarkers(text),
+    };
   };
 
   const compactAttachment = (item) => {
@@ -364,13 +431,14 @@
 
         const content = sanitizeForExport(message.content || {});
         const metadata = sanitizeForExport(message.metadata || {});
-        const text = extractTextFromContent(content).trim();
+        const rawText = extractTextFromContent(content).trim();
+        const text = stripCitationMarkers(rawText);
         if (!text) return null;
 
         const createdAt = toIso(message.create_time);
         const updatedAt = toIso(message.update_time) || createdAt;
         const sender = message.author?.role === "user" ? "human" : "assistant";
-        const citations = extractCitations(metadata);
+        const citationData = extractCitations(metadata, rawText);
         const attachments = extractAttachments(message);
         const model = getModelSlug(metadata);
 
@@ -383,7 +451,8 @@
               stop_timestamp: updatedAt,
               type: "text",
               text,
-              citations,
+              citations: citationData.citations,
+              citation_markers: citationData.citation_markers,
             },
           ],
           sender,
