@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Local JSON Exporter
 // @namespace    local.chatgpt.exporter
-// @version      0.4.1
+// @version      0.4.2
 // @description  Export the current ChatGPT conversation as JSON. No third-party uploads.
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -14,7 +14,7 @@
 (() => {
   "use strict";
 
-  const EXPORTER_VERSION = "0.4.1";
+  const EXPORTER_VERSION = "0.4.2";
   const BUTTON_ID = "local-json-exporter-button";
   const PANEL_ID = "local-json-exporter-panel";
   const SYNC_BADGE_ID = "local-json-exporter-sync-badge";
@@ -748,6 +748,35 @@
     }
   };
 
+  const installRouteWatcher = () => {
+    let lastHref = location.href;
+    let refreshTimer = null;
+    const scheduleRefresh = () => {
+      clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(() => {
+        if (location.href === lastHref) return;
+        lastHref = location.href;
+        renderSyncBadge("Checking...", "muted");
+        refreshSyncBadge();
+      }, 250);
+    };
+
+    const wrapHistoryMethod = (name) => {
+      const original = history[name];
+      if (typeof original !== "function") return;
+      history[name] = function (...args) {
+        const result = original.apply(this, args);
+        scheduleRefresh();
+        return result;
+      };
+    };
+
+    wrapHistoryMethod("pushState");
+    wrapHistoryMethod("replaceState");
+    window.addEventListener("popstate", scheduleRefresh);
+    window.addEventListener("hashchange", scheduleRefresh);
+  };
+
   const installButton = () => {
     if (document.getElementById(BUTTON_ID)) return;
 
@@ -803,6 +832,7 @@
   };
 
   installButton();
+  installRouteWatcher();
   renderSyncBadge("Checking...", "muted");
   refreshSyncBadge();
   setInterval(refreshSyncBadge, 10000);
